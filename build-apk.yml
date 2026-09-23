@@ -1,0 +1,55 @@
+name: Build Android APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - uses: gradle/actions/setup-gradle@v4
+        with: {gradle-version: '8.7'}
+      - name: Create Android project
+        shell: bash
+        run: |
+          mkdir -p app/src/main/java/com/retrobros/game app/src/main/assets app/src/main/res/values
+          cp game.html app/src/main/assets/index.html
+          cat > settings.gradle <<'EOF2'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name='RetroBros'
+          include ':app'
+          EOF2
+          cat > build.gradle <<'EOF2'
+          buildscript { repositories { google(); mavenCentral() }; dependencies { classpath 'com.android.tools.build:gradle:8.5.2' } }
+          allprojects { repositories { google(); mavenCentral() } }
+          EOF2
+          cat > gradle.properties <<'EOF2'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          EOF2
+          cat > app/build.gradle <<'EOF2'
+          apply plugin: 'com.android.application'
+          android { namespace 'com.retrobros.game'; compileSdk 35; defaultConfig { applicationId 'com.retrobros.game'; minSdk 23; targetSdk 35; versionCode 1; versionName '1.0' } }
+          EOF2
+          cat > app/src/main/res/values/styles.xml <<'EOF2'
+          <?xml version="1.0" encoding="utf-8"?><resources><style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar"><item name="android:windowFullscreen">true</item><item name="android:navigationBarColor">#000000</item></style></resources>
+          EOF2
+          cat > app/src/main/AndroidManifest.xml <<'EOF2'
+          <?xml version="1.0" encoding="utf-8"?><manifest xmlns:android="http://schemas.android.com/apk/res/android"><application android:theme="@style/AppTheme" android:label="Retro Bros"><activity android:name=".MainActivity" android:screenOrientation="landscape" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity></application></manifest>
+          EOF2
+          cat > app/src/main/java/com/retrobros/game/MainActivity.java <<'EOF2'
+          package com.retrobros.game;
+          import android.app.*;import android.os.*;import android.view.*;import android.webkit.*;
+          public class MainActivity extends Activity { WebView w; public void onCreate(Bundle b){super.onCreate(b);getWindow().setFlags(1024,1024);w=new WebView(this);w.getSettings().setJavaScriptEnabled(true);w.setOverScrollMode(View.OVER_SCROLL_NEVER);w.loadUrl("file:///android_asset/index.html");setContentView(w);} public void onBackPressed(){w.evaluateJavascript("paused=true",null);} }
+          EOF2
+      - name: Build APK
+        run: gradle :app:assembleDebug --stacktrace
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: retro-bros-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
