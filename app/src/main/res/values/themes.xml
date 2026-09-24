@@ -1,0 +1,4 @@
+<resources>
+<style name="Theme.DinoRush" parent="Theme.MaterialComponents.DayNight.NoActionBar"><item name="colorPrimary">@color/brand_primary</item><item name="colorPrimaryDark">@color/brand_primary_dark</item><item name="colorAccent">@color/brand_accent</item><item name="android:windowFullscreen">true</item><item name="android:windowBackground">@color/panel_bg_solid</item></style>
+<style name="MenuButton" parent="Widget.MaterialComponents.Button"><item name="android:layout_width">match_parent</item><item name="android:layout_height">56dp</item><item name="android:layout_marginTop">8dp</item><item name="android:textSize">18sp</item><item name="backgroundTint">@color/button_bg</item><item name="android:textColor">@color/text_light</item></style>
+</resources>
