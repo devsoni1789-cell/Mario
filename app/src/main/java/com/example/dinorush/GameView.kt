@@ -73,6 +73,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private var obstaclesPassedThisRun = 0
     private var combo = 0
     private var bestComboThisRun = 0
+    private var comboTimer = 0f
     private var screenShakeTimer = 0f
     private var screenShakeStrength = 0f
     private var obstacleSpawnDistanceRemaining = 0f
@@ -104,6 +105,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private val maxHoldSeconds = 0.22f
     private val coyoteDuration = 0.12f
     private val jumpBufferDuration = 0.10f
+    private val comboGracePeriod = 2.6f
     private val pixelsPerMeter = 40f
     private val dayNightPeriodSeconds = 90f
 
@@ -185,7 +187,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         dinoY = groundY - dinoStandH; dinoH = dinoStandH; velocityY = 0f; onGround = true
         isDucking = false; isHoldingJump = false; doubleJumpCharges = 1; doubleJumpUsedThisAirtime = false
         coyoteTimer = 0f; jumpBufferTimer = 0f
-        combo = 0; bestComboThisRun = 0; screenShakeTimer = 0f; screenShakeStrength = 0f
+        combo = 0; bestComboThisRun = 0; comboTimer = 0f; screenShakeTimer = 0f; screenShakeStrength = 0f
         shieldActive = false; shieldTimer = 0f; invincibleTimer = 0f; slowMoTimer = 0f; doubleScoreTimer = 0f; activePowerUpLabel = null
         activePowerUpMaxDuration = 1f; activePowerUpTimeLeft = 0f
         dayNightPhase = 0f; environmentIndex = 0
@@ -277,6 +279,8 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         val multiplier = if (doubleScoreTimer > 0f) 2f else 1f
         scoreF += speed * dt * 0.05f * multiplier; score = scoreF.toInt()
         updateDinoPhysics(dt); updateEnvironment(dt); updateSpawning(dt); updateObstacles(dt); updateCoins(dt); updatePowerUps(dt); updateEffects(dt); updateParticles(dt)
+        comboTimer = max(0f, comboTimer - dt)
+        if (comboTimer <= 0f && combo > 0) combo = 0
         if (prefs.graphicsQuality >= 2) {
             particleTrailTimer += dt
             if (particleTrailTimer >= 0.08f && onGround) {
@@ -380,7 +384,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
             val o=it.next(); o.x-=advance
             if(o.type==ObstacleType.DRONE)o.wobble+=dt*3f
             if(o.x+o.w<0f){it.remove();continue}
-            if(!o.passed&&o.x+o.w<dinoX){o.passed=true;obstaclesPassedThisRun++;combo++;bestComboThisRun=max(bestComboThisRun,combo);if(combo>1)spawnBurst(dinoX+dinoW/2f,dinoY,Color.parseColor("#FFE27A"),min(12,4+combo))}
+            if(!o.passed&&o.x+o.w<dinoX){o.passed=true;obstaclesPassedThisRun++;combo++;comboTimer=comboGracePeriod;bestComboThisRun=max(bestComboThisRun,combo);if(combo>1)spawnBurst(dinoX+dinoW/2f,dinoY,Color.parseColor("#FFE27A"),min(12,4+combo))}
             val drawY=if(o.type==ObstacleType.DRONE)o.baseY+sin(o.wobble)*14f*scale else o.y
             otherHitbox.set(o.x,drawY,o.x+o.w,drawY+o.h);dinoHitboxNow()
             if(rectOverlapInset(dinoHitbox,otherHitbox))handleHit()
@@ -466,6 +470,8 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         if(doubleScoreTimer>0f){doubleScoreTimer-=dt;if(doubleScoreTimer<=0f)clearLabelIfMatches("2x SCORE")}
         if(invincibleTimer>0f){invincibleTimer-=dt;if(invincibleTimer<=0f)clearLabelIfMatches("INVINCIBLE")}
         if(activePowerUpTimeLeft>0f)activePowerUpTimeLeft=max(0f,activePowerUpTimeLeft-dt)
+        if(screenShakeTimer>0f)screenShakeTimer=max(0f,screenShakeTimer-dt)
+        if(activePowerUpLabel=="MAGNET" && activePowerUpTimeLeft<=0f)clearLabelIfMatches("MAGNET")
     }
     private fun clearLabelIfMatches(label: String) {
         if (activePowerUpLabel == label) {
@@ -474,6 +480,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
                 invincibleTimer > 0f -> "INVINCIBLE"
                 doubleScoreTimer > 0f -> "2x SCORE"
                 slowMoTimer > 0f -> "SLOW-MO"
+                activePowerUpLabel == "MAGNET" && activePowerUpTimeLeft > 0f -> "MAGNET"
                 else -> null
             }
         }
@@ -503,6 +510,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         val distMeters=(distanceTraveled/pixelsPerMeter).toInt()
         prefs.addJumps(jumpsThisRun);prefs.addObstaclesPassed(obstaclesPassedThisRun)
         val isNewBest=prefs.reportRunFinished(score,distMeters)
+        activePowerUpLabel=null; activePowerUpTimeLeft=0f
         if(isNewBest)soundManager?.playHighScore()else soundManager?.playGameOver()
         listener?.onGameOver(score,prefs.bestScore,distMeters,coinsThisRun,isNewBest)
     }
@@ -528,10 +536,23 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     }
     override fun onDraw(canvas:Canvas){
         if(viewW<=0f||viewH<=0f)return
+        val save=canvas.save()
+        if(screenShakeTimer>0f && prefs.graphicsQuality>=1){
+            val fade=(screenShakeTimer/0.28f).coerceIn(0f,1f)
+            canvas.translate((Random.nextFloat()*2f-1f)*screenShakeStrength*fade,(Random.nextFloat()*2f-1f)*screenShakeStrength*fade)
+        }
         val(skyTop,skyBottom)=skyColorsForPhase()
         skyPaint.shader=LinearGradient(0f,0f,0f,groundY,skyTop,skyBottom,Shader.TileMode.CLAMP)
         canvas.drawRect(0f,0f,viewW,groundY,skyPaint);drawParallaxHills(canvas,skyBottom);drawGround(canvas);dinoHitboxNow()
         for(o in obstacles)drawObstacle(canvas,o);for(c in coins)if(!c.collected)drawCoin(canvas,c);for(p in powerUps)if(!p.collected)drawPowerUp(canvas,p);drawDino(canvas);drawParticles(canvas)
+        if(prefs.graphicsQuality>=2 && speed>baseSpeed*1.45f) drawSpeedLines(canvas)
+        canvas.restoreToCount(save)
+    }
+    private fun drawSpeedLines(canvas:Canvas){
+        val p=particlePaint
+        p.style=Paint.Style.STROKE; p.strokeWidth=2f*scale; p.color=Color.WHITE; p.alpha=45
+        repeat(5){ val y=viewH*0.18f+Random.nextFloat()*viewH*0.45f; val x=Random.nextFloat()*viewW; canvas.drawLine(x,y,x-32f*scale,y,p) }
+        p.style=Paint.Style.FILL
     }
     private fun drawParallaxHills(canvas:Canvas,tint:Int){
         val quality = prefs.graphicsQuality.coerceIn(0, 2)
@@ -542,6 +563,13 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         val offset=(distanceTraveled*if(quality==2) 0.16f else 0.12f)%(viewW+step)
         var x=-offset
         while(x<viewW){canvas.drawOval(x,groundY-90f*scale,x+width,groundY+40f*scale,hillPaint);x+=step}
+        if(dayNightPhase>0.50f && dayNightPhase<0.86f){
+            val starPaint=particlePaint
+            starPaint.style=Paint.Style.FILL; starPaint.color=Color.WHITE; starPaint.alpha=if(quality==2)170 else 100
+            repeat(if(quality==2)16 else 7){ val sx=(it*113f+distanceTraveled*0.008f)%(viewW+16f); val sy=28f*scale+(it*47f)%(groundY*0.42f); canvas.drawCircle(sx,sy,1.1f*scale,starPaint) }
+            starPaint.color=Color.parseColor("#FFF1B8"); starPaint.alpha=210
+            canvas.drawCircle(viewW*0.82f,viewH*0.18f,22f*scale,starPaint)
+        }
     }
     private fun drawGround(canvas:Canvas){
         canvas.drawRect(0f,groundY,viewW,viewH,groundPaint);val segment=46f*scale;val offset=distanceTraveled%segment;var x=-offset
