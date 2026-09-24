@@ -321,8 +321,11 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         if(invincibleTimer>0f){invincibleTimer-=dt;if(invincibleTimer<=0f)clearLabelIfMatches("INVINCIBLE")}
         if(activePowerUpTimeLeft>0f)activePowerUpTimeLeft=max(0f,activePowerUpTimeLeft-dt)
     }
-    private fun clearLabelIfMatches(label:String){if(activePowerUpLabel==label)activePowerUpLabel=if(shieldActive)"SHIELD"else null}
-    private fun updateParticles(dt:Float){
+    private fun clearLabelIfMatches(label: String) {
+        if (activePowerUpLabel == label) {
+            activePowerUpLabel = if (shieldActive) "SHIELD" else null
+        }
+    }
         val it=particles.iterator()
         while(it.hasNext()){val p=it.next();p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=500f*dt;p.life-=dt;if(p.life<=0f)it.remove()}
     }
