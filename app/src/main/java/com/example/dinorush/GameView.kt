@@ -31,7 +31,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private val prefs = GamePrefs(context)
 
     private enum class ObstacleType(val isAir: Boolean) { SMALL_ROCK(false), LARGE_ROCK(false), CACTUS(false), LOG(false), BARRIER(false), FLYER(true), DRONE(true) }
-    private enum class PowerUpType(val label: String) { SHIELD("SHIELD"), SLOW_MO("SLOW-MO"), DOUBLE_SCORE("2x SCORE"), INVINCIBLE("INVINCIBLE"), DOUBLE_JUMP("DOUBLE JUMP") }
+    private enum class PowerUpType(val label: String) { SHIELD("SHIELD"), MAGNET("MAGNET"), SLOW_MO("SLOW-MO"), DOUBLE_SCORE("2x SCORE"), INVINCIBLE("INVINCIBLE"), DOUBLE_JUMP("DOUBLE JUMP") }
     private data class Obstacle(val type: ObstacleType, var x: Float, val y: Float, val w: Float, val h: Float, val baseY: Float = y, var wobble: Float = 0f, var passed: Boolean = false)
     private data class Coin(var x: Float, var y: Float, var collected: Boolean = false)
     private data class PowerUpEntity(var x: Float, var y: Float, val type: PowerUpType, var collected: Boolean = false)
@@ -54,6 +54,8 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private var jumpHoldElapsed = 0f
     private var doubleJumpCharges = 0
     private var doubleJumpUsedThisAirtime = false
+    private var coyoteTimer = 0f
+    private var jumpBufferTimer = 0f
     private var runPhase = 0f
     private var wasAirborne = false
     private var touchDownX = 0f
@@ -69,6 +71,10 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private var coinsThisRun = 0
     private var jumpsThisRun = 0
     private var obstaclesPassedThisRun = 0
+    private var combo = 0
+    private var bestComboThisRun = 0
+    private var screenShakeTimer = 0f
+    private var screenShakeStrength = 0f
     private var obstacleSpawnDistanceRemaining = 0f
     private var distanceSinceLastCoinRow = 0f
     private var nextCoinRowGap = 0f
@@ -96,6 +102,8 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private val doubleJumpVelocityRef = -1180f
     private val holdGravityScale = 0.42f
     private val maxHoldSeconds = 0.22f
+    private val coyoteDuration = 0.12f
+    private val jumpBufferDuration = 0.10f
     private val pixelsPerMeter = 40f
     private val dayNightPeriodSeconds = 90f
 
@@ -175,7 +183,9 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         distanceTraveled = 0f; baseSpeed = 340f * scale; speed = baseSpeed; scoreF = 0f; score = 0
         coinsThisRun = 0; jumpsThisRun = 0; obstaclesPassedThisRun = 0
         dinoY = groundY - dinoStandH; dinoH = dinoStandH; velocityY = 0f; onGround = true
-        isDucking = false; isHoldingJump = false; doubleJumpCharges = 0; doubleJumpUsedThisAirtime = false
+        isDucking = false; isHoldingJump = false; doubleJumpCharges = 1; doubleJumpUsedThisAirtime = false
+        coyoteTimer = 0f; jumpBufferTimer = 0f
+        combo = 0; bestComboThisRun = 0; screenShakeTimer = 0f; screenShakeStrength = 0f
         shieldActive = false; shieldTimer = 0f; invincibleTimer = 0f; slowMoTimer = 0f; doubleScoreTimer = 0f; activePowerUpLabel = null
         activePowerUpMaxDuration = 1f; activePowerUpTimeLeft = 0f
         dayNightPhase = 0f; environmentIndex = 0
@@ -247,13 +257,15 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         } else isDucking = false
     }
     private fun tryJump() {
-        if (onGround && !isDucking) {
+        if ((onGround || coyoteTimer > 0f) && !isDucking) {
             velocityY = jumpVelocityRef * scale; onGround = false; isHoldingJump = true; jumpHoldElapsed = 0f
-            doubleJumpUsedThisAirtime = false; jumpsThisRun++; soundManager?.playJump()
+            coyoteTimer = 0f; jumpBufferTimer = 0f; doubleJumpUsedThisAirtime = false; jumpsThisRun++; soundManager?.playJump()
         } else if (!onGround && doubleJumpCharges > 0 && !doubleJumpUsedThisAirtime) {
             velocityY = doubleJumpVelocityRef * scale; doubleJumpCharges--; doubleJumpUsedThisAirtime = true
             isHoldingJump = true; jumpHoldElapsed = 0f; jumpsThisRun++
             spawnBurst(dinoX + dinoW / 2f, dinoY + dinoH / 2f, Color.parseColor("#8FE3FF"), 10); soundManager?.playJump()
+        } else {
+            jumpBufferTimer = jumpBufferDuration
         }
     }
 
@@ -282,6 +294,11 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     }
     private fun updateDinoPhysics(dt: Float) {
         if (isHoldingJump) jumpHoldElapsed += dt
+        if (!onGround) coyoteTimer = max(0f, coyoteTimer - dt)
+        if (jumpBufferTimer > 0f) {
+            jumpBufferTimer = max(0f, jumpBufferTimer - dt)
+            if (onGround && !isDucking) tryJump()
+        }
         val holding = isHoldingJump && velocityY < 0f && jumpHoldElapsed < maxHoldSeconds
         velocityY += gravityRef * scale * (if (holding) holdGravityScale else 1f) * dt
         dinoY += velocityY * dt
@@ -290,7 +307,8 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         if (dinoY >= floor) {
             dinoY = floor
             if (!onGround && wasAirborne) soundManager?.playLand()
-            onGround = true; velocityY = 0f; isHoldingJump = false; doubleJumpUsedThisAirtime = false; wasAirborne = false
+            onGround = true; coyoteTimer = coyoteDuration; velocityY = 0f
+            isHoldingJump = false; doubleJumpCharges = 1; doubleJumpUsedThisAirtime = false; wasAirborne = false
         } else { onGround = false; wasAirborne = true }
         runPhase += dt * (if (onGround) 10f else 4f)
     }
@@ -362,7 +380,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
             val o=it.next(); o.x-=advance
             if(o.type==ObstacleType.DRONE)o.wobble+=dt*3f
             if(o.x+o.w<0f){it.remove();continue}
-            if(!o.passed&&o.x+o.w<dinoX){o.passed=true;obstaclesPassedThisRun++}
+            if(!o.passed&&o.x+o.w<dinoX){o.passed=true;obstaclesPassedThisRun++;combo++;bestComboThisRun=max(bestComboThisRun,combo);if(combo>1)spawnBurst(dinoX+dinoW/2f,dinoY,Color.parseColor("#FFE27A"),min(12,4+combo))}
             val drawY=if(o.type==ObstacleType.DRONE)o.baseY+sin(o.wobble)*14f*scale else o.y
             otherHitbox.set(o.x,drawY,o.x+o.w,drawY+o.h);dinoHitboxNow()
             if(rectOverlapInset(dinoHitbox,otherHitbox))handleHit()
@@ -378,6 +396,10 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
                 continue
             }
             if (!c.collected) {
+                if (activePowerUpLabel == "MAGNET" && activePowerUpTimeLeft > 0f) {
+                    val dx=dinoX+dinoW/2f-c.x; val dy=dinoY+dinoH/2f-c.y; val d2=dx*dx+dy*dy; val radius=190f*scale
+                    if(d2<radius*radius && d2>1f){val d=kotlin.math.sqrt(d2);val pull=(520f*scale*dt*(1f-d/radius)).coerceAtLeast(18f*scale*dt);c.x+=dx/d*pull;c.y+=dy/d*pull}
+                }
                 dinoHitboxNow()
                 otherHitbox.set(
                     c.x - 14f * scale,
@@ -422,6 +444,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private fun applyPowerUp(type: PowerUpType) {
         when(type){
             PowerUpType.SHIELD->{shieldActive=true;shieldTimer=6f;setActiveLabel("SHIELD",6f)}
+            PowerUpType.MAGNET->{setActiveLabel("MAGNET",8f)}
             PowerUpType.SLOW_MO->{slowMoTimer=6f;setActiveLabel("SLOW-MO",6f)}
             PowerUpType.DOUBLE_SCORE->{doubleScoreTimer=8f;setActiveLabel("2x SCORE",8f)}
             PowerUpType.INVINCIBLE->{invincibleTimer=5f;setActiveLabel("INVINCIBLE",5f)}
@@ -462,14 +485,15 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private fun rectOverlapInset(a:RectF,b:RectF):Boolean{val i=RectF(b.left+b.width()*0.12f,b.top+b.height()*0.12f,b.right-b.width()*0.12f,b.bottom-b.height()*0.12f);return rectOverlap(a,i)}
     private fun handleHit(){
         if(invincibleTimer>0f)return
-        if(shieldActive){shieldActive=false;shieldTimer=0f;if(activePowerUpLabel=="SHIELD")activePowerUpLabel=null;spawnBurst(dinoX+dinoW/2f,dinoY+dinoH/2f,Color.parseColor("#6FD8FF"),16);soundManager?.vibrate(40);return}
+        if(shieldActive){shieldActive=false;shieldTimer=0f;if(activePowerUpLabel=="SHIELD")activePowerUpLabel=null;spawnBurst(dinoX+dinoW/2f,dinoY+dinoH/2f,Color.parseColor("#6FD8FF"),16);screenShakeTimer=0.18f;screenShakeStrength=7f*scale;soundManager?.vibrate(40);return}
+        combo=0;screenShakeTimer=0.28f;screenShakeStrength=10f*scale
         gameOver()
     }
     private fun gameOver(){
         if(state==State.GAME_OVER)return
         state=State.GAME_OVER;stopRenderLoop();soundManager?.playCrash();soundManager?.vibrate(150);spawnBurst(dinoX+dinoW/2f,dinoY+dinoH/2f,Color.parseColor("#C0392B"),20)
         val distMeters=(distanceTraveled/pixelsPerMeter).toInt()
-        prefs.addCoins(coinsThisRun);prefs.addJumps(jumpsThisRun);prefs.addObstaclesPassed(obstaclesPassedThisRun)
+        prefs.addJumps(jumpsThisRun);prefs.addObstaclesPassed(obstaclesPassedThisRun)
         val isNewBest=prefs.reportRunFinished(score,distMeters)
         if(isNewBest)soundManager?.playHighScore()else soundManager?.playGameOver()
         listener?.onGameOver(score,prefs.bestScore,distMeters,coinsThisRun,isNewBest)
@@ -530,8 +554,8 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     }
     private fun drawCoin(canvas:Canvas,c:Coin){val r=14f*scale;canvas.drawCircle(c.x,c.y,r,coinPaint);canvas.drawCircle(c.x-r*0.3f,c.y-r*0.3f,r*0.35f,coinShinePaint)}
     private fun drawPowerUp(canvas:Canvas,p:PowerUpEntity){
-        val r=20f*scale;obstaclePaint.color=when(p.type){PowerUpType.SHIELD->Color.parseColor("#3E7BD9");PowerUpType.SLOW_MO->Color.parseColor("#7C58C9");PowerUpType.DOUBLE_SCORE->Color.parseColor("#D9A23E");PowerUpType.INVINCIBLE->Color.parseColor("#D93E6B");PowerUpType.DOUBLE_JUMP->Color.parseColor("#3ED98C")}
-        canvas.drawCircle(p.x,p.y,r,obstaclePaint);val glyph=when(p.type){PowerUpType.SHIELD->"S";PowerUpType.SLOW_MO->"Z";PowerUpType.DOUBLE_SCORE->"2x";PowerUpType.INVINCIBLE->"★";PowerUpType.DOUBLE_JUMP->"↑↑"};powerUpTextPaint.textSize=16f*scale;canvas.drawText(glyph,p.x,p.y+6f*scale,powerUpTextPaint)
+        val r=20f*scale;obstaclePaint.color=when(p.type){PowerUpType.SHIELD->Color.parseColor("#3E7BD9");PowerUpType.MAGNET->Color.parseColor("#E06BCB");PowerUpType.SLOW_MO->Color.parseColor("#7C58C9");PowerUpType.DOUBLE_SCORE->Color.parseColor("#D9A23E");PowerUpType.INVINCIBLE->Color.parseColor("#D93E6B");PowerUpType.DOUBLE_JUMP->Color.parseColor("#3ED98C")}
+        canvas.drawCircle(p.x,p.y,r,obstaclePaint);val glyph=when(p.type){PowerUpType.SHIELD->"S";PowerUpType.MAGNET->"M";PowerUpType.SLOW_MO->"Z";PowerUpType.DOUBLE_SCORE->"2x";PowerUpType.INVINCIBLE->"★";PowerUpType.DOUBLE_JUMP->"↑↑"};powerUpTextPaint.textSize=16f*scale;canvas.drawText(glyph,p.x,p.y+6f*scale,powerUpTextPaint)
     }
     private fun drawDino(canvas:Canvas){
         dinoBodyPaint.color=if(state==State.GAME_OVER)Color.parseColor("#B04A3A")else if(invincibleTimer>0f&&(runPhase.toInt()%2==0))Color.parseColor("#8FE3FF")else Color.parseColor("#3FA687")
