@@ -326,6 +326,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
             activePowerUpLabel = if (shieldActive) "SHIELD" else null
         }
     }
+    private fun updateParticles(dt: Float) {
         val it=particles.iterator()
         while(it.hasNext()){val p=it.next();p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=500f*dt;p.life-=dt;if(p.life<=0f)it.remove()}
     }
