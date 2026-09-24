@@ -11,6 +11,7 @@ import android.util.AttributeSet
 import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.View
+import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
@@ -58,6 +59,8 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private var touchDownX = 0f
     private var touchDownY = 0f
     private var swipeConsumedAsDuck = false
+    private var touchDownTimeNanos = 0L
+    private var particleTrailTimer = 0f
     private var distanceTraveled = 0f
     private var speed = 0f
     private var baseSpeed = 0f
@@ -66,8 +69,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private var coinsThisRun = 0
     private var jumpsThisRun = 0
     private var obstaclesPassedThisRun = 0
-    private var distanceSinceLastObstacle = 0f
-    private var nextObstacleGap = 0f
+    private var obstacleSpawnDistanceRemaining = 0f
     private var distanceSinceLastCoinRow = 0f
     private var nextCoinRowGap = 0f
     private var distanceSinceLastPowerUp = 0f
@@ -128,17 +130,44 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private var loopPosted = false
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
+            if (!isAttachedToWindow || state != State.RUNNING) {
+                loopPosted = false
+                lastFrameNanos = 0L
+                return
+            }
             if (lastFrameNanos != 0L) {
                 var dt = (frameTimeNanos - lastFrameNanos) / 1_000_000_000f
                 if (dt > 0.05f) dt = 0.05f
-                if (state == State.RUNNING) update(dt)
+                update(dt)
             }
-            lastFrameNanos = frameTimeNanos; invalidate()
-            if (isAttachedToWindow) choreographer.postFrameCallback(this) else loopPosted = false
+            lastFrameNanos = frameTimeNanos
+            invalidate()
+            choreographer.postFrameCallback(this)
         }
     }
-    override fun onAttachedToWindow() { super.onAttachedToWindow(); if (!loopPosted) { loopPosted = true; lastFrameNanos = 0L; choreographer.postFrameCallback(frameCallback) } }
-    override fun onDetachedFromWindow() { super.onDetachedFromWindow(); loopPosted = false }
+
+    private fun startRenderLoop() {
+        if (!isAttachedToWindow || state != State.RUNNING || loopPosted) return
+        loopPosted = true
+        lastFrameNanos = 0L
+        choreographer.postFrameCallback(frameCallback)
+    }
+
+    private fun stopRenderLoop() {
+        if (loopPosted) choreographer.removeFrameCallback(frameCallback)
+        loopPosted = false
+        lastFrameNanos = 0L
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        startRenderLoop()
+    }
+
+    override fun onDetachedFromWindow() {
+        stopRenderLoop()
+        super.onDetachedFromWindow()
+    }
 
     fun startNewGame() {
         obstacles.clear(); coins.clear(); powerUps.clear(); particles.clear()
@@ -148,22 +177,48 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         isDucking = false; isHoldingJump = false; doubleJumpCharges = 0; doubleJumpUsedThisAirtime = false
         shieldActive = false; invincibleTimer = 0f; slowMoTimer = 0f; doubleScoreTimer = 0f; activePowerUpLabel = null
         dayNightPhase = 0f; environmentIndex = 0
-        distanceSinceLastObstacle = 0f; nextObstacleGap = baseSpeed * 12f
+        obstacleSpawnDistanceRemaining = baseSpeed * 12f
         distanceSinceLastCoinRow = 0f; nextCoinRowGap = baseSpeed * 6f
         distanceSinceLastPowerUp = 0f; nextPowerUpGap = baseSpeed * 16f
-        state = State.RUNNING; lastFrameNanos = 0L
+        state = State.RUNNING
+        lastFrameNanos = 0L
+        startRenderLoop()
     }
-    fun pauseGame() { if (state == State.RUNNING) state = State.PAUSED }
-    fun resumeGame() { if (state == State.PAUSED) { state = State.RUNNING; lastFrameNanos = 0L } }
-    fun stopToMenu() { state = State.IDLE }
+    fun pauseGame() {
+        if (state == State.RUNNING) {
+            state = State.PAUSED
+            stopRenderLoop()
+        }
+    }
+    fun resumeGame() {
+        if (state == State.PAUSED) {
+            state = State.RUNNING
+            startRenderLoop()
+        }
+    }
+    fun stopToMenu() {
+        state = State.IDLE
+        stopRenderLoop()
+    }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (state != State.RUNNING) return true
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { touchDownX = event.x; touchDownY = event.y; swipeConsumedAsDuck = false; tryJump() }
+            MotionEvent.ACTION_DOWN -> {
+                touchDownX = event.x
+                touchDownY = event.y
+                touchDownTimeNanos = event.eventTime * 1_000_000L
+                swipeConsumedAsDuck = false
+                tryJump()
+            }
             MotionEvent.ACTION_MOVE -> {
-                val dy = event.y - touchDownY; val dx = event.x - touchDownX
-                if (!swipeConsumedAsDuck && dy > 60f * scale && dy > kotlin.math.abs(dx)) {
+                val dy = event.y - touchDownY
+                val dx = event.x - touchDownX
+                val elapsedSec = ((event.eventTime * 1_000_000L) - touchDownTimeNanos).coerceAtLeast(1L) / 1_000_000_000f
+                val downwardVelocity = dy / elapsedSec
+                val deliberateSwipe = dy > 60f * scale && dy > kotlin.math.abs(dx) * 1.15f &&
+                    elapsedSec <= 0.30f && downwardVelocity > 650f * scale
+                if (!swipeConsumedAsDuck && deliberateSwipe) {
                     swipeConsumedAsDuck = true
                     if (onGround || dinoY > groundY - dinoStandH * 0.4f) { velocityY = 0f; dinoY = groundY - dinoDuckH; onGround = true }
                     isDucking = true; isHoldingJump = false
@@ -200,6 +255,15 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         val multiplier = if (doubleScoreTimer > 0f) 2f else 1f
         scoreF += speed * dt * 0.05f * multiplier; score = scoreF.toInt()
         updateDinoPhysics(dt); updateEnvironment(dt); updateSpawning(dt); updateObstacles(dt); updateCoins(dt); updatePowerUps(dt); updateEffects(dt); updateParticles(dt)
+        if (prefs.graphicsQuality >= 2) {
+            particleTrailTimer += dt
+            if (particleTrailTimer >= 0.08f && onGround) {
+                particleTrailTimer = 0f
+                spawnBurst(dinoX + dinoW * 0.12f, groundY - 4f * scale, Color.WHITE, 2)
+            }
+        } else {
+            particleTrailTimer = 0f
+        }
         hudUpdateTimer += dt
         if (hudUpdateTimer >= 0.1f) {
             hudUpdateTimer = 0f
@@ -227,11 +291,16 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private fun currentDifficultyTier(): Int = when { score < 120 -> 0; score < 300 -> 1; score < 600 -> 2; else -> 3 }
     private fun updateSpawning(dt: Float) {
         val moveDelta = speed * dt
-        distanceSinceLastObstacle += moveDelta; distanceSinceLastCoinRow += moveDelta; distanceSinceLastPowerUp += moveDelta
-        if (distanceSinceLastObstacle >= nextObstacleGap) {
-            spawnObstacle(); distanceSinceLastObstacle = 0f
-            val minGap = speed * 1.0f + 260f * scale; val maxGap = speed * 1.9f + 420f * scale
-            nextObstacleGap = minGap + Random.nextFloat() * (maxGap - minGap)
+        obstacleSpawnDistanceRemaining -= moveDelta
+        distanceSinceLastCoinRow += moveDelta
+        distanceSinceLastPowerUp += moveDelta
+        if (obstacleSpawnDistanceRemaining <= 0f) {
+            spawnObstacle()
+            val rightmostEdge = obstacles.maxOfOrNull { it.x + it.w } ?: viewW
+            val minGap = speed * 1.0f + 260f * scale
+            val maxGap = speed * 1.9f + 420f * scale
+            val nextGap = minGap + Random.nextFloat() * (maxGap - minGap)
+            obstacleSpawnDistanceRemaining = max(1f, rightmostEdge - viewW + nextGap)
         }
         if (distanceSinceLastCoinRow >= nextCoinRowGap) { spawnCoinRow(); distanceSinceLastCoinRow = 0f; nextCoinRowGap = speed * 3.2f + Random.nextFloat() * speed * 2f }
         if (distanceSinceLastPowerUp >= nextPowerUpGap) { spawnPowerUp(); distanceSinceLastPowerUp = 0f; nextPowerUpGap = speed * 9f + Random.nextFloat() * speed * 6f }
@@ -331,7 +400,10 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         while(it.hasNext()){val p=it.next();p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=500f*dt;p.life-=dt;if(p.life<=0f)it.remove()}
     }
     private fun spawnBurst(x:Float,y:Float,color:Int,count:Int){
-        repeat(count){val angle=Random.nextFloat()*(Math.PI*2).toFloat();val speedP=80f+Random.nextFloat()*160f;particles.add(Particle(x,y,kotlin.math.cos(angle)*speedP,kotlin.math.sin(angle)*speedP,0.5f,0.5f,color,4f*scale))}
+        val quality = prefs.graphicsQuality.coerceIn(0, 2)
+        if (quality == 0) return
+        val actualCount = if (quality == 2) ceil(count * 1.5f).toInt() else count
+        repeat(actualCount){val angle=Random.nextFloat()*(Math.PI*2).toFloat();val speedP=80f+Random.nextFloat()*160f;particles.add(Particle(x,y,kotlin.math.cos(angle)*speedP,kotlin.math.sin(angle)*speedP,0.5f,0.5f,color,4f*scale))}
     }
     private fun dinoHitboxNow(){val insetX=dinoW*0.18f;val insetY=dinoH*0.14f;dinoHitbox.set(dinoX+insetX,dinoY+insetY,dinoX+dinoW-insetX,dinoY+dinoH-insetY)}
     private fun rectOverlap(a:RectF,b:RectF):Boolean=a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top
@@ -343,7 +415,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     }
     private fun gameOver(){
         if(state==State.GAME_OVER)return
-        state=State.GAME_OVER;soundManager?.playCrash();soundManager?.vibrate(150);spawnBurst(dinoX+dinoW/2f,dinoY+dinoH/2f,Color.parseColor("#C0392B"),20)
+        state=State.GAME_OVER;stopRenderLoop();soundManager?.playCrash();soundManager?.vibrate(150);spawnBurst(dinoX+dinoW/2f,dinoY+dinoH/2f,Color.parseColor("#C0392B"),20)
         val distMeters=(distanceTraveled/pixelsPerMeter).toInt()
         prefs.addCoins(coinsThisRun);prefs.addJumps(jumpsThisRun);prefs.addObstaclesPassed(obstaclesPassedThisRun)
         val isNewBest=prefs.reportRunFinished(score,distMeters)
@@ -378,8 +450,14 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         for(o in obstacles)drawObstacle(canvas,o);for(c in coins)if(!c.collected)drawCoin(canvas,c);for(p in powerUps)if(!p.collected)drawPowerUp(canvas,p);drawDino(canvas);drawParticles(canvas)
     }
     private fun drawParallaxHills(canvas:Canvas,tint:Int){
-        hillPaint.color=tint;hillPaint.alpha=140;val offset=(distanceTraveled*0.12f)%(viewW+260f*scale);var x=-offset
-        while(x<viewW){canvas.drawOval(x,groundY-90f*scale,x+220f*scale,groundY+40f*scale,hillPaint);x+=260f*scale}
+        val quality = prefs.graphicsQuality.coerceIn(0, 2)
+        hillPaint.color=tint
+        hillPaint.alpha=if(quality==0) 90 else if(quality==2) 160 else 140
+        val step=if(quality==0) 420f*scale else if(quality==2) 210f*scale else 260f*scale
+        val width=if(quality==2) 190f*scale else 220f*scale
+        val offset=(distanceTraveled*if(quality==2) 0.16f else 0.12f)%(viewW+step)
+        var x=-offset
+        while(x<viewW){canvas.drawOval(x,groundY-90f*scale,x+width,groundY+40f*scale,hillPaint);x+=step}
     }
     private fun drawGround(canvas:Canvas){
         canvas.drawRect(0f,groundY,viewW,viewH,groundPaint);val segment=46f*scale;val offset=distanceTraveled%segment;var x=-offset
@@ -416,6 +494,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         if(shieldActive)canvas.drawCircle(bx+bw/2f,by+bh/2f,max(bw,bh)*0.75f,shieldRingPaint)
     }
     private fun drawParticles(canvas:Canvas){
+        if (prefs.graphicsQuality == 0) return
         for(p in particles){particlePaint.color=p.color;particlePaint.alpha=(255*(p.life/p.maxLife)).toInt().coerceIn(0,255);canvas.drawCircle(p.x,p.y,p.radius,particlePaint)}
     }
 }
