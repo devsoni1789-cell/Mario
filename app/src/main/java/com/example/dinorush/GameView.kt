@@ -79,6 +79,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private val powerUps = ArrayList<PowerUpEntity>()
     private val particles = ArrayList<Particle>()
     private var shieldActive = false
+    private var shieldTimer = 0f
     private var invincibleTimer = 0f
     private var slowMoTimer = 0f
     private var doubleScoreTimer = 0f
@@ -175,7 +176,8 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         coinsThisRun = 0; jumpsThisRun = 0; obstaclesPassedThisRun = 0
         dinoY = groundY - dinoStandH; dinoH = dinoStandH; velocityY = 0f; onGround = true
         isDucking = false; isHoldingJump = false; doubleJumpCharges = 0; doubleJumpUsedThisAirtime = false
-        shieldActive = false; invincibleTimer = 0f; slowMoTimer = 0f; doubleScoreTimer = 0f; activePowerUpLabel = null
+        shieldActive = false; shieldTimer = 0f; invincibleTimer = 0f; slowMoTimer = 0f; doubleScoreTimer = 0f; activePowerUpLabel = null
+        activePowerUpMaxDuration = 1f; activePowerUpTimeLeft = 0f
         dayNightPhase = 0f; environmentIndex = 0
         obstacleSpawnDistanceRemaining = baseSpeed * 12f
         distanceSinceLastCoinRow = 0f; nextCoinRowGap = baseSpeed * 6f
@@ -202,6 +204,10 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (state == State.GAME_OVER && event.actionMasked == MotionEvent.ACTION_DOWN) {
+            startNewGame()
+            return true
+        }
         if (state != State.RUNNING) return true
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -218,13 +224,17 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
                 val downwardVelocity = dy / elapsedSec
                 val deliberateSwipe = dy > 60f * scale && dy > kotlin.math.abs(dx) * 1.15f &&
                     elapsedSec <= 0.30f && downwardVelocity > 650f * scale
-                if (!swipeConsumedAsDuck && deliberateSwipe) {
+                if (!swipeConsumedAsDuck && deliberateSwipe && !onGround) {
                     swipeConsumedAsDuck = true
                     if (onGround || dinoY > groundY - dinoStandH * 0.4f) { velocityY = 0f; dinoY = groundY - dinoDuckH; onGround = true }
                     isDucking = true; isHoldingJump = false
                 }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { isDucking = false; isHoldingJump = false }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                isDucking = false
+                isHoldingJump = false
+                swipeConsumedAsDuck = false
+            }
         }
         return true
     }
@@ -359,24 +369,59 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         }
     }
     private fun updateCoins(dt: Float) {
-        val it=coins.iterator();dinoHitboxNow()
-        while(it.hasNext()){
-            val c=it.next();c.x-=speed*dt
-            if(c.x<-30f){it.remove();continue}
-            if(!c.collected){val dx=c.x-(dinoX+dinoW/2f);val dy=c.y-(dinoY+dinoH/2f);if(dx*dx+dy*dy<(30f*scale)*(30f*scale)){c.collected=true;coinsThisRun++;soundManager?.playCoin();spawnBurst(c.x,c.y,Color.parseColor("#F4C430"),6);it.remove()}}
+        val it = coins.iterator()
+        while (it.hasNext()) {
+            val c = it.next()
+            c.x -= speed * dt
+            if (c.x < -40f) {
+                it.remove()
+                continue
+            }
+            if (!c.collected) {
+                dinoHitboxNow()
+                otherHitbox.set(
+                    c.x - 14f * scale,
+                    c.y - 14f * scale,
+                    c.x + 14f * scale,
+                    c.y + 14f * scale
+                )
+                if (rectOverlapInset(dinoHitbox, otherHitbox)) {
+                    c.collected = true
+                    coinsThisRun++
+                    prefs.addCoins(1)
+                    soundManager?.playCoin()
+                    spawnBurst(c.x, c.y, Color.parseColor("#F4C430"), 6)
+                    it.remove()
+                }
+            }
         }
     }
     private fun updatePowerUps(dt: Float) {
-        val it=powerUps.iterator()
-        while(it.hasNext()){
-            val p=it.next();p.x-=speed*dt
-            if(p.x<-40f){it.remove();continue}
-            if(!p.collected){val dx=p.x-(dinoX+dinoW/2f);val dy=p.y-(dinoY+dinoH/2f);if(dx*dx+dy*dy<(34f*scale)*(34f*scale)){p.collected=true;applyPowerUp(p.type);soundManager?.playPowerUp();spawnBurst(p.x,p.y,Color.parseColor("#8FE3FF"),12);it.remove()}}
+        val it = powerUps.iterator()
+        while (it.hasNext()) {
+            val p = it.next()
+            p.x -= speed * dt
+            if (p.x < -50f) {
+                it.remove()
+                continue
+            }
+            if (!p.collected) {
+                dinoHitboxNow()
+                val r = 20f * scale
+                otherHitbox.set(p.x - r, p.y - r, p.x + r, p.y + r)
+                if (rectOverlapInset(dinoHitbox, otherHitbox)) {
+                    p.collected = true
+                    applyPowerUp(p.type)
+                    soundManager?.playPowerUp()
+                    spawnBurst(p.x, p.y, Color.parseColor("#8FE3FF"), 12)
+                    it.remove()
+                }
+            }
         }
     }
     private fun applyPowerUp(type: PowerUpType) {
         when(type){
-            PowerUpType.SHIELD->{shieldActive=true;setActiveLabel("SHIELD",0f)}
+            PowerUpType.SHIELD->{shieldActive=true;shieldTimer=6f;setActiveLabel("SHIELD",6f)}
             PowerUpType.SLOW_MO->{slowMoTimer=6f;setActiveLabel("SLOW-MO",6f)}
             PowerUpType.DOUBLE_SCORE->{doubleScoreTimer=8f;setActiveLabel("2x SCORE",8f)}
             PowerUpType.INVINCIBLE->{invincibleTimer=5f;setActiveLabel("INVINCIBLE",5f)}
@@ -385,6 +430,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     }
     private fun setActiveLabel(label:String,duration:Float){activePowerUpLabel=label;activePowerUpMaxDuration=if(duration>0f)duration else 1f;activePowerUpTimeLeft=duration}
     private fun updateEffects(dt:Float){
+        if(shieldTimer>0f){shieldTimer-=dt;if(shieldTimer<=0f){shieldTimer=0f;shieldActive=false;clearLabelIfMatches("SHIELD")}}
         if(slowMoTimer>0f){slowMoTimer-=dt;if(slowMoTimer<=0f)clearLabelIfMatches("SLOW-MO")}
         if(doubleScoreTimer>0f){doubleScoreTimer-=dt;if(doubleScoreTimer<=0f)clearLabelIfMatches("2x SCORE")}
         if(invincibleTimer>0f){invincibleTimer-=dt;if(invincibleTimer<=0f)clearLabelIfMatches("INVINCIBLE")}
@@ -392,7 +438,13 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     }
     private fun clearLabelIfMatches(label: String) {
         if (activePowerUpLabel == label) {
-            activePowerUpLabel = if (shieldActive) "SHIELD" else null
+            activePowerUpLabel = when {
+                shieldActive -> "SHIELD"
+                invincibleTimer > 0f -> "INVINCIBLE"
+                doubleScoreTimer > 0f -> "2x SCORE"
+                slowMoTimer > 0f -> "SLOW-MO"
+                else -> null
+            }
         }
     }
     private fun updateParticles(dt: Float) {
@@ -410,7 +462,7 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private fun rectOverlapInset(a:RectF,b:RectF):Boolean{val i=RectF(b.left+b.width()*0.12f,b.top+b.height()*0.12f,b.right-b.width()*0.12f,b.bottom-b.height()*0.12f);return rectOverlap(a,i)}
     private fun handleHit(){
         if(invincibleTimer>0f)return
-        if(shieldActive){shieldActive=false;if(activePowerUpLabel=="SHIELD")activePowerUpLabel=null;spawnBurst(dinoX+dinoW/2f,dinoY+dinoH/2f,Color.parseColor("#6FD8FF"),16);soundManager?.vibrate(40);return}
+        if(shieldActive){shieldActive=false;shieldTimer=0f;if(activePowerUpLabel=="SHIELD")activePowerUpLabel=null;spawnBurst(dinoX+dinoW/2f,dinoY+dinoH/2f,Color.parseColor("#6FD8FF"),16);soundManager?.vibrate(40);return}
         gameOver()
     }
     private fun gameOver(){
