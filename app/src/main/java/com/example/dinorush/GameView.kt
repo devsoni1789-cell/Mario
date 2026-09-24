@@ -452,6 +452,14 @@ class GameView @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
         }
     }
     private fun setActiveLabel(label:String,duration:Float){activePowerUpLabel=label;activePowerUpMaxDuration=if(duration>0f)duration else 1f;activePowerUpTimeLeft=duration}
+    private fun powerUpIsActive(type: PowerUpType): Boolean = when(type) {
+        PowerUpType.SHIELD -> shieldActive
+        PowerUpType.MAGNET -> activePowerUpLabel == "MAGNET" && activePowerUpTimeLeft > 0f
+        PowerUpType.SLOW_MO -> slowMoTimer > 0f
+        PowerUpType.DOUBLE_SCORE -> doubleScoreTimer > 0f
+        PowerUpType.INVINCIBLE -> invincibleTimer > 0f
+        PowerUpType.DOUBLE_JUMP -> doubleJumpCharges > 0
+    }
     private fun updateEffects(dt:Float){
         if(shieldTimer>0f){shieldTimer-=dt;if(shieldTimer<=0f){shieldTimer=0f;shieldActive=false;clearLabelIfMatches("SHIELD")}}
         if(slowMoTimer>0f){slowMoTimer-=dt;if(slowMoTimer<=0f)clearLabelIfMatches("SLOW-MO")}
